@@ -1,14 +1,74 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import numpy as np
 import pickle
+import scipy.stats as s
+import config
+from fastapi import FastAPI, Query
+from pydantic import BaseModel
+from typing import Annotated
 
-backend_app = FastAPI()
+def determine_normalizing_probability(placement_equals_0_likelihood,placement_equals_1_likelihood):
 
-class predict_placement(BaseModel):
+    return (placement_equals_0_likelihood*(1-config.PLACEMENT_EQUALS_1_PRIOR)) + \
+    (placement_equals_1_likelihood*config.PLACEMENT_EQUALS_1_PRIOR)
 
-    iq:int[40,160]
-    previous_sem_result:float[0,10]
-    cgpa:float[0,10]
-    communcation_skills:int[0,10]
-    projects_completed:int[]
+def determine_placement_posterior_probability(input_features):
 
+    input_features = np.array(input_features)
+    input_features = input_features.reshape(1,input_features.shape[0])
+    eig_vectors = np.load("eigen_vectors.npy")
+    new_input_features = np.matmul(input_features,eig_vectors)
+
+    placement_equals_1_likelihood = 1.0
+    placement_equals_0_likelihood = 1.0
+
+    with open("likelihood_distribution_params.pkl","rb") as file_handle:
+        likelihood_distribution_params = pickle.load(file_handle)
+
+    for input_feat, input_feat_value in zip(config.NEW_INPUT_FEATURES_NAMES, new_input_features):
+        mu_0, sigma_0 = likelihood_distribution_params[0][input_feat]
+        mu_1, sigma_1 = likelihood_distribution_params[1][input_feat]
+        
+        p_input_feature_on_0_placement = s.norm.pdf(input_feat_value,mu_0,sigma_0)
+        p_input_feature_on_1_placement = s.norm.pdf(input_feat_value,mu_1,sigma_1)
+
+        placement_equals_0_likelihood = placement_equals_0_likelihood * p_input_feature_on_0_placement
+        placement_equals_1_likelihood = placement_equals_1_likelihood * p_input_feature_on_1_placement
+
+    normalizing_probability = determine_normalizing_probability(placement_equals_0_likelihood,
+                                                                placement_equals_1_likelihood)
+        
+    placement_equals_0_posterior = (placement_equals_0_likelihood * (1-config.PLACEMENT_EQUALS_1_PRIOR))/normalizing_probability
+    placement_equals_1_posterior = (placement_equals_1_likelihood * config.PLACEMENT_EQUALS_1_PRIOR)/normalizing_probability
+
+    if placement_equals_1_posterior[0] > placement_equals_0_posterior[0]:
+        return {"result":"Given your inputs, most likeliy you are going to get placed and the probability of you getting placed is roughly {}".format(placement_equals_1_posterior[0])}
+    else:
+        return {"result":"Given your inputs, most likely you are not going to get placed and the probability of you getting placed is roughly {}".format(placement_equals_1_posterior[0])}
+    
+
+app = FastAPI()
+
+class InputFeatureVector(BaseModel):
+
+    iq: Annotated[int, Query(ge=40,le=160)]
+    previous_semester_result: Annotated[float, Query(ge=0,le=10)]
+    cgpa: Annotated[float, Query(ge=0,le=10)]
+    communication_skills: Annotated[int, Query(ge=0,le=10)]
+    projects_completed: Annotated[int, Query(ge=0,le=5)]
+
+
+@app.get("/")
+def home_page():
+
+    return "This Machine Learning Web App predicts whether a student will be placed based on the five inputs given by the student: IQ, Previous Semester Result, CGPA, Communication Skills, Projects Completed"
+
+
+@app.post("/compute-probability")
+def compute_probability(input_features:InputFeatureVector):
+
+    input_feature_values_list = list()
+
+    for input_feature_name, input_feature_value in input_features.model_fields.items():
+        input_feature_values_list.append(getattr(input_features,input_feature_name))
+
+    return determine_placement_posterior_probability(input_feature_values_list)
