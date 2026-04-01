@@ -3,7 +3,7 @@ import requests
 
 def compute_probability(payload):
 
-    r = requests.post(url="http://127.0.0.1:8000/compute-probability",json=payload)
+    r = requests.post(url="https://placement-backend-vwiy.onrender.com/compute-probability",json=payload)
     return r.json()
 
 st.set_page_config(page_title="A Web App",layout="centered")
